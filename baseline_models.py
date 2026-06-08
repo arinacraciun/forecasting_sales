@@ -5,8 +5,11 @@ from sklearn.metrics import mean_squared_error
 from xgboost import XGBRegressor
 from statsforecast import StatsForecast
 from statsforecast.models import Naive, SeasonalNaive, AutoETS, Theta, MSTL
+import seaborn as sns
 import os
 import warnings
+
+sns.set_theme(style='whitegrid', palette='deep')
 
 # Suppress division by zero warnings caused by flatlined time series in StatsForecast
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid value encountered in divide')
@@ -102,16 +105,26 @@ def run_baseline_comparison(data_path='./data/processed/features_ready.parquet',
     
     # Visualization A: Bar Chart of RMSLE Scores
     plt.figure(figsize=(10, 6))
+    
+    # Create a custom palette to highlight XGBoost
     colors = ['#2ca02c' if m == 'XGBoost' else '#1f77b4' for m in results_df.index]
-    bars = plt.bar(results_df.index, results_df['RMSLE'], color=colors)
+    
+    # Use seaborn's barplot
+    ax = sns.barplot(
+        x=results_df.index, 
+        y=results_df['RMSLE'], 
+        palette=colors,
+        hue=results_df.index, # Added hue to avoid seaborn warnings with custom palettes
+        legend=False
+    )
+    
     plt.title('Model Performance Comparison (RMSLE)')
     plt.ylabel('RMSLE (Lower is Better)')
     plt.xticks(rotation=45)
     
-    # Annotate bars with scores
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, yval + 0.01, f'{yval:.4f}', ha='center', va='bottom', fontsize=10)
+    # Annotate bars with scores using the cleaner ax.bar_label method
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.4f', padding=3, fontsize=10)
         
     plt.tight_layout()
     plt.savefig(f'{output_dir}/model_comparison_rmsle.png')
@@ -127,14 +140,14 @@ def run_baseline_comparison(data_path='./data/processed/features_ready.parquet',
     
     plt.figure(figsize=(14, 7))
     
-    # Plot Historical and Actuals
-    plt.plot(sample_train['date'], sample_train['sales'], label='Historical Sales', color='silver')
-    plt.plot(sample_holdout['date'], sample_holdout['sales'], label='Actual Sales (Holdout)', color='black', linewidth=2)
+    # Plot Historical and Actuals using seaborn
+    sns.lineplot(x=sample_train['date'], y=sample_train['sales'], label='Historical Sales', color='silver')
+    sns.lineplot(x=sample_holdout['date'], y=sample_holdout['sales'], label='Actual Sales (Holdout)', color='black', linewidth=2)
     
-    # Plot Models
-    plt.plot(sample_holdout['date'], sample_holdout['XGBoost'], label='XGBoost', color='green', linewidth=2.5)
-    plt.plot(sample_holdout['date'], sample_holdout['AutoETS'], label='AutoETS', linestyle='--', color='blue')
-    plt.plot(sample_holdout['date'], sample_holdout['Theta'], label='Theta', linestyle='-.', color='orange')
+    # Plot Models using seaborn
+    sns.lineplot(x=sample_holdout['date'], y=sample_holdout['XGBoost'], label='XGBoost', color='green', linewidth=2.5)
+    sns.lineplot(x=sample_holdout['date'], y=sample_holdout['AutoETS'], label='AutoETS', linestyle='--', color='blue')
+    sns.lineplot(x=sample_holdout['date'], y=sample_holdout['Theta'], label='Theta', linestyle='-.', color='orange')
     
     plt.title(f'Forecast vs Actuals: {sample_id} (XGBoost vs Baselines)')
     plt.xlabel('Date')
