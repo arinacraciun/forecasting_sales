@@ -6,35 +6,12 @@ from sklearn.metrics import mean_absolute_error
 from statsmodels.tsa.seasonal import STL
 from statsmodels.graphics.tsaplots import plot_acf
 from statsmodels.tsa.stattools import adfuller
+from sklearn.ensemble import IsolationForest  
 import seaborn as sns
 
 # Plotting configuration
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams['figure.figsize'] = (12, 6)
-
-def plot_weekly_seasonality(train_df, output_dir='./graphs'):
-    """Generates and saves a bar chart of average sales by day of the week."""
-    print("Generating weekly seasonality plot...")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Ensure date is datetime
-    if not pd.api.types.is_datetime64_any_dtype(train_df['date']):
-        train_df['date'] = pd.to_datetime(train_df['date'])
-        
-    train_df['day_of_week'] = train_df['date'].dt.dayofweek
-    weekly_sales = train_df.groupby('day_of_week')['sales'].mean()
-    
-    plt.figure(figsize=(10, 5))
-    weekly_sales.plot(kind='bar', color='skyblue', rot=0)
-    plt.title('Average Sales by Day of Week')
-    plt.ylabel('Average Sales')
-    plt.xlabel('Day of Week (0=Monday, 6=Sunday)')
-    plt.tight_layout()
-    
-    out_path = f'{output_dir}/weekly_sales.png'
-    plt.savefig(out_path)
-    plt.close()
-    print(f"Saved to {out_path}")
 
 def run_imputation_experiment(train_final, output_dir='./graphs'):
     """
@@ -107,16 +84,64 @@ def run_imputation_experiment(train_final, output_dir='./graphs'):
     plt.close()
     print(f"Saved winning visualization to {out_path}\n")
 
+# def plot_diagnostics(train_df, output_dir='./graphs'):
+#     """Generates ACF, Boxplots, and STL decomposition to justify feature engineering."""
+#     print("Generating diagnostic plots...")
+#     os.makedirs(output_dir, exist_ok=True)
+    
+#     if not pd.api.types.is_datetime64_any_dtype(train_df['date']):
+#         train_df['date'] = pd.to_datetime(train_df['date'])
+        
+#     # Aggregate to global daily sales for macro-diagnostics
+#     global_sales = train_df.groupby('date')['sales'].sum().reset_index()
+#     global_sales.set_index('date', inplace=True)
+#     global_sales['day_of_week'] = global_sales.index.dayofweek
+#     global_sales['month'] = global_sales.index.month
+
+#     # 1. Seasonality Boxplots
+#     fig, axes = plt.subplots(1, 2, figsize=(18, 5))
+#     sns.boxplot(data=global_sales, x='day_of_week', y='sales', ax=axes[0])
+#     axes[0].set_title('Weekly Seasonality (0=Monday)')
+#     sns.boxplot(data=global_sales, x='month', y='sales', ax=axes[1])
+#     axes[1].set_title('Yearly Seasonality by Month')
+#     plt.savefig(f'{output_dir}/seasonality_boxplots.png')
+#     plt.close()
+
+#     # 2. Autocorrelation (ACF)
+#     plt.figure(figsize=(12, 4))
+#     plot_acf(global_sales['sales'], lags=35, ax=plt.gca())
+#     plt.title('Autocorrelation Function (ACF) - Daily Sales')
+#     plt.savefig(f'{output_dir}/acf_plot.png')
+#     plt.close()
+
+#     # 3. STL Decomposition
+#     stl = STL(global_sales['sales'], period=7, robust=True)
+#     res = stl.fit()
+#     fig = res.plot()
+#     fig.set_size_inches(15, 8)
+#     plt.suptitle('STL Decomposition of Global Sales (Weekly Period)', y=1.02)
+#     plt.savefig(f'{output_dir}/stl_decomposition.png')
+#     plt.close()
+    
+#     print("Diagnostic plots saved successfully.")
+
 def plot_diagnostics(train_df, output_dir='./graphs'):
-    """Generates ACF, Boxplots, and STL decomposition to justify feature engineering."""
+    """Generates ACF, Boxplots, STL decomposition, and Outlier Comparison plots to justify feature engineering."""
     print("Generating diagnostic plots...")
     os.makedirs(output_dir, exist_ok=True)
     
     if not pd.api.types.is_datetime64_any_dtype(train_df['date']):
         train_df['date'] = pd.to_datetime(train_df['date'])
         
-    # Aggregate to global daily sales for macro-diagnostics
-    global_sales = train_df.groupby('date')['sales'].sum().reset_index()
+    # --- Aggregation Step (Adjusted for Multivariate Features) ---
+    # Sales and promotions are summed across all stores; oil price is a nationwide constant per day, so mean/first works.
+    agg_dict = {'sales': 'sum'}
+    if 'onpromotion' in train_df.columns:
+        agg_dict['onpromotion'] = 'sum'
+    if 'dcoilwtico' in train_df.columns:
+        agg_dict['dcoilwtico'] = 'mean'
+
+    global_sales = train_df.groupby('date').agg(agg_dict).reset_index()
     global_sales.set_index('date', inplace=True)
     global_sales['day_of_week'] = global_sales.index.dayofweek
     global_sales['month'] = global_sales.index.month
@@ -145,6 +170,48 @@ def plot_diagnostics(train_df, output_dir='./graphs'):
     plt.suptitle('STL Decomposition of Global Sales (Weekly Period)', y=1.02)
     plt.savefig(f'{output_dir}/stl_decomposition.png')
     plt.close()
+    
+    # 4. Outlier Detection Comparison (New Integrated Section)
+    global_sales['stl_residual'] = res.resid
+
+    # Method 1: IQR on STL Residuals (Robust to Seasonality)
+    Q1 = global_sales['stl_residual'].quantile(0.25)
+    Q3 = global_sales['stl_residual'].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    global_sales['outlier_residual_iqr'] = (global_sales['stl_residual'] < lower_bound) | \
+                                           (global_sales['stl_residual'] > upper_bound)
+
+    # Method 2: Multivariate Anomaly Detection with Isolation Forest
+    features = ['sales', 'onpromotion', 'dcoilwtico']
+    # Defensive guardrail to ensure features exist in dataframe
+    available_features = [f for f in features if f in global_sales.columns]
+    
+    if len(available_features) > 0:
+        iso_forest = IsolationForest(contamination=0.02, random_state=42)
+        global_sales['outlier_iso_forest'] = iso_forest.fit_predict(global_sales[available_features])
+        global_sales['outlier_iso_forest'] = global_sales['outlier_iso_forest'] == -1
+
+        # Plot and compare results
+        plt.figure(figsize=(15, 5))
+        plt.plot(global_sales.index, global_sales['sales'], label='Normal Sales', color='blue', alpha=0.6)
+
+        # Plot IQR Residual Outliers
+        outliers_iqr = global_sales[global_sales['outlier_residual_iqr']]
+        plt.scatter(outliers_iqr.index, outliers_iqr['sales'], color='red', label='Residual IQR Outlier', zorder=5)
+
+        # Plot Isolation Forest Outliers
+        outliers_iso = global_sales[global_sales['outlier_iso_forest']]
+        plt.scatter(outliers_iso.index, outliers_iso['sales'], color='orange', marker='x', label='Isolation Forest Outlier', zorder=5)
+
+        plt.title('Outlier Detection Comparison')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/outlier_detection_comparison.png')
+        plt.close()
+    else:
+        print("Skipping Isolation Forest plot: Required features not found in DataFrame.")
     
     print("Diagnostic plots saved successfully.")
 
@@ -215,16 +282,16 @@ def plot_feature_importances(csv_path='feature_importances.csv', output_dir='./g
         importance_df = pd.read_csv(csv_path)
         
         # Ensure it's sorted just in case
-        importance_df = importance_df.sort_values(by='Importance', ascending=False)
+        importance_df = importance_df.sort_values(by='importance', ascending=False)
 
         os.makedirs(output_dir, exist_ok=True)
         plt.figure(figsize=(12, 8))
         
         sns.barplot(
             data=importance_df.head(20), 
-            x='Importance', 
-            y='Feature', 
-            hue='Feature', 
+            x='importance', 
+            y='feature', 
+            hue='feature', 
             palette='viridis', 
             legend=False
         )
@@ -249,7 +316,6 @@ if __name__ == "__main__":
         df = pd.read_parquet('./data/processed/train_processed.parquet')
         
         # Original Visualizations
-        plot_weekly_seasonality(df)
         run_imputation_experiment(df)
         plot_diagnostics(df)
         

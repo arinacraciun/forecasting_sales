@@ -6,6 +6,10 @@ from xgboost import XGBRegressor
 from statsforecast import StatsForecast
 from statsforecast.models import Naive, SeasonalNaive, AutoETS, Theta, MSTL
 import os
+import warnings
+
+# Suppress division by zero warnings caused by flatlined time series in StatsForecast
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid value encountered in divide')
 
 def run_baseline_comparison(data_path='./data/processed/features_ready.parquet', output_dir='./graphs'):
     print("Loading feature-engineered data...")
@@ -76,6 +80,9 @@ def run_baseline_comparison(data_path='./data/processed/features_ready.parquet',
     results = {'XGBoost': xgb_rmsle}
     
     for model in baseline_models:
+        # Fallback for models that failed on intermittent series
+        holdout_df[model] = holdout_df[model].fillna(0)
+        
         # Baselines predict raw sales, so we clip to 0, then transform to log1p to calculate RMSLE
         preds_raw = np.clip(holdout_df[model], 0, None)
         preds_log1p = np.log1p(preds_raw)
